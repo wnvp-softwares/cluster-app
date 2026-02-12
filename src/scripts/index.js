@@ -1,6 +1,7 @@
 const RUTA_ADMIN = "C:/mysql-cluster/bin";
 const COMANDO_ADMIN = "ndb_mgmd.exe -f C:/mysql-cluster/config/config.ini --configdir=C:/mysql-cluster/config";
 
+const iniciarCluster = document.getElementById("levantar");
 const refrescarBtn = document.getElementById("refrescar");
 
 const clusterH2 = document.getElementById("cluster-status");
@@ -10,6 +11,15 @@ const mysqldH2 = document.getElementById("mysqld-status");
 
 
 /* ================= MANUAL ================= */
+iniciarCluster.addEventListener("click", async () => {
+    try {
+        const status = await window.api.levantarCluster(COMANDO_ADMIN, RUTA_ADMIN);
+        console.log("Cluster iniciado ...");
+    } catch (error) {
+        console.error("Error al iniciar el cluster: " + error);
+    }
+});
+
 refrescarBtn.addEventListener("click", async () => {
     const status = await window.api.refreshStatus();
 

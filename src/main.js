@@ -1,19 +1,23 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const { exec, spawn } = require("child_process");
+const { dirname } = require("path");
+const { dir } = require("console");
 
 /* ================= WINDOW ================= */
+let win;
 
 function createWindow() {
-    const win = new BrowserWindow({
-        width: 1000,
-        height: 700,
+    win = new BrowserWindow({
+        width: 1200,
+        height: 900,
         webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false
+            preload: __dirname + "/preload.js",
+            nodeIntegration: false,
+            contextIsolation: true
         }
     });
 
-    win.loadFile("./interfaces/index.html");
+    win.loadFile("./src/interfaces/index.html");
 }
 
 app.whenReady().then(createWindow);
@@ -28,10 +32,21 @@ app.on("activate", () => {
 
 /* ================= CONFIG ================= */
 
+// NDB MGM
 const NDB_MGM_RUTA = "C:/mysql-cluster/bin";
 const NDB_MGM_CMD = "ndb_mgm.exe";
+
+// MYSQL
 const MYSQL_RUTA = "C:/mysql-cluster/bin";
-const MYSQL_CMD = "mysqld.exe --defaults-file=C:/mysql-cluster/my-cluster.ini";
+const MYSQL_CMD = "mysqld.exe";
+const MYSQL_ARGS = ["--defaults-file=C:/mysql-cluster/my-cluster.ini"];
+
+/* ================= STATE ================= */
+
+let monitorInterval = null;
+let lastState = null;
+let mysqlLevantado = false;
+let mysqlEstado = false;
 
 /* ================= IPC ================= */
 
@@ -41,24 +56,45 @@ ipcMain.handle("levantar-cluster", async (event, comando, cwd) => {
             if (error) {
                 reject(stderr || error.message);
             } else {
-                iniciarMonitor();   // 🔥 se activa solo si levanta bien
+                iniciarMonitor();   // solo si levanta bien
                 resolve(stdout);
             }
         });
     });
 });
 
-/* ================= MONITOR ================= */
+ipcMain.handle("refresh-status", async () => {
+    return new Promise((resolve, reject) => {
 
-let monitorInterval = null;
-let lastState = null;
-let mysqlLevantado = false;
-let mysqlEstado = false;
+        const proc = spawn(NDB_MGM_CMD, [], { cwd: NDB_MGM_RUTA });
+
+        proc.stdin.write("SHOW\n");
+        proc.stdin.end();
+
+        let output = "";
+
+        proc.stdout.on("data", (data) => {
+            output += data.toString();
+        });
+
+        proc.stderr.on("data", (data) => {
+            reject(data.toString());
+        });
+
+        proc.on("close", () => {
+            const statusObj = parseClusterStatus(output);
+            statusObj.mysqlStatus = mysqlEstado;
+            resolve(statusObj);
+        });
+    });
+});
+
+/* ================= MONITOR ================= */
 
 function iniciarMonitor() {
     if (monitorInterval) return;
 
-    console.log("Monitor del cluster iniciado ...");
+    console.log("🟢 Monitor del cluster iniciado ...");
 
     monitorInterval = setInterval(() => {
         const proc = spawn(NDB_MGM_CMD, [], { cwd: NDB_MGM_RUTA });
@@ -81,18 +117,23 @@ function iniciarMonitor() {
             const statusObj = parseClusterStatus(output);
             statusObj.mysqlStatus = mysqlEstado;
 
-            // Solo mostrar si cambia el estado
+            /* ===== IPC PUSH ===== */
+            if (win && win.webContents) {
+                win.webContents.send("cluster-status", statusObj);
+            }
+
+            /* ===== LOG SOLO SI CAMBIA ===== */
             if (JSON.stringify(statusObj) !== JSON.stringify(lastState)) {
                 lastState = statusObj;
 
-                console.log("===== ESTADO CLUSTER (OBJETO) =====");
+                console.log("===== ESTADO CLUSTER =====");
                 console.log(statusObj);
-                console.log("==================================");
+                console.log("==========================");
             }
 
-            // 🔥 ORQUESTACIÓN MYSQL
+            /* ===== ORQUESTACIÓN MYSQL ===== */
             if (statusObj.clusterStatus && !mysqlLevantado) {
-                console.log("Cluster completo → levantando MySQL Server...");
+                console.log("🔥 Cluster completo → levantando MySQL Server...");
                 levantarMySQL();
                 mysqlLevantado = true;
             }
@@ -117,12 +158,12 @@ function parseClusterStatus(output) {
         status.clusterStatus = true;
     }
 
-    // Nodo 1 (ej: Node 2)
+    // Nodo 1
     if (text.includes("node 2") && (text.includes("started") || text.includes("connected"))) {
         status.ndb1Status = true;
     }
 
-    // Nodo 2 (ej: Node 3)
+    // Nodo 2
     if (text.includes("node 3") && (text.includes("started") || text.includes("connected"))) {
         status.ndb2Status = true;
     }
@@ -130,41 +171,20 @@ function parseClusterStatus(output) {
     return status;
 }
 
-ipcMain.handle("refresh-status", async () => {
-    return new Promise((resolve, reject) => {
-
-        const proc = spawn(NDB_MGM_CMD, [], { cwd: NDB_MGM_RUTA });
-
-        proc.stdin.write("SHOW\n");
-        proc.stdin.end();
-
-        let output = "";
-
-        proc.stdout.on("data", (data) => {
-            output += data.toString();
-        });
-
-        proc.stderr.on("data", (data) => {
-            reject(data.toString());
-        });
-
-        proc.on("close", () => {
-            const statusObj = parseClusterStatus(output);
-            resolve(statusObj);   // 🔥 devuelve objeto al renderer
-        });
-    });
-});
+/* ================= MYSQL ================= */
 
 function levantarMySQL() {
-    exec(MYSQL_CMD, { cwd: MYSQL_RUTA }, (error, stdout, stderr) => {
-        if (error) {
-            console.error("Error al levantar MySQL:", stderr || error.message);
-            mysqlEstado = false;
-        } else {
-            console.log("MySQL Server levantado correctamente");
-            mysqlEstado = true;
-        }
-    });
-}
+    console.log("🚀 Iniciando MySQL Server...");
 
-win.webContents.send("cluster-status", statusObj);
+    const mysqlProc = spawn(MYSQL_CMD, MYSQL_ARGS, {
+        cwd: MYSQL_RUTA,
+        detached: true,
+        stdio: "ignore"
+    });
+
+    mysqlProc.unref();
+
+    mysqlEstado = true;
+
+    console.log("✅ MySQL Server levantado");
+}
