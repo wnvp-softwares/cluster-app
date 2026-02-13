@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="es">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cluster - Admin</title>
     <link rel="stylesheet" href="./main.css">
 </head>
+
 <body>
     <h1>ADMINISTRADOR DE CLUSTER</h1>
     <div class="cabecera-info">
@@ -17,23 +19,40 @@
 
     <div class="ndbd-info">
         <h2 id="ndb1-status">Estado de Nodo 1: UNDEFINED</h2>
-        <button>Desconectar</button>
+        <button id="ndb1-stop">Desconectar</button>
         <h2 id="ndb2-status">Estado de Nodo 2: UNDEFINED</h2>
-        <button>Desconectar</button>
+        <button id="ndb2-stop">Desconectar</button>
         <h2 id="mysqld-status">Estado de MySQLD: UNDEFINED</h2>
+        <button id="mysqld">Encender Nodo</button>
     </div>
 
     <h2>CRUD PARA PRUEBAS DE LA BASE DE DATOS COMPARTIDA POR NDBD</h2>
 
-    <div class="input-bd">
-        <input type="text" placeholder="nombre" required>
-        <input type="email" placeholder="correo@email.com" required>
-        <input type="number" placeholder="edad" required>
-        <button>
+    <form class="input-bd">
+        <input id="input-nombre" type="text" placeholder="nombre" required>
+        <input id="input-email" type="email" placeholder="correo@email.com" required>
+        <input id="input-edad" type="number" placeholder="edad" required>
+        <button id="insertar" type="button">
             Insertar
         </button>
+    </form>
+
+    <div class="tabla-info" id="tablaBD">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Nombre</th>
+                    <th>Correo</th>
+                    <th>Edad</th>
+                    <th>Acciones</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
     </div>
 
     <script src="../scripts/index.js"></script>
 </body>
+
 </html>

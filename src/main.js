@@ -1,190 +1,288 @@
-const { app, BrowserWindow, ipcMain } = require("electron");
-const { exec, spawn } = require("child_process");
-const { dirname } = require("path");
-const { dir } = require("console");
+const { BrowserWindow, app, ipcMain } = require("electron");
+const { exec } = require("child_process");
+const path = require("path");
+const mysql = require("mysql2/promise");
+require("dotenv").config();
 
-/* ================= WINDOW ================= */
-let win;
+const pool = mysql.createPool({
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+});
 
-function createWindow() {
-    win = new BrowserWindow({
+let ventana;
+
+function crearVentana() {
+    ventana = new BrowserWindow({
         width: 1200,
         height: 900,
         webPreferences: {
-            preload: __dirname + "/preload.js",
+            preload: path.join(__dirname, "/preload.js"),
             nodeIntegration: false,
             contextIsolation: true
         }
     });
 
-    win.loadFile("./src/interfaces/index.html");
+    ventana.loadFile(path.join(__dirname, "/interfaces/index.html"));
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+    try {
+        const connection = await pool.getConnection();
+        console.log("Conectado a la base de datos");
+        connection.release();
+    } catch {
+        console.error("Error al conectar con la base de datos");
+    }
+
+    crearVentana();
+
+    app.on("activate", () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+            crearVentana();
+        }
+    });
+});
 
 app.on("window-all-closed", () => {
-    if (process.platform !== "darwin") app.quit();
+    if (process.platform !== "darwin") {
+        app.quit();
+    }
 });
 
-app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-});
+// Variables de uso medido
 
-/* ================= CONFIG ================= */
+const NDB_MGMD_COMMAND = "ndb_mgmd.exe -f C:/mysql-cluster/config/config.ini --configdir=C:/mysql-cluster/config";
+const NDB_MGMD_CWD = "C:/mysql-cluster/bin";
 
-// NDB MGM
-const NDB_MGM_RUTA = "C:/mysql-cluster/bin";
-const NDB_MGM_CMD = "ndb_mgm.exe";
+const NDB_MGM_COMMANDO = 'cmd /c "echo show | ndb_mgm.exe"';
+const NDB_MGM_CWD = "C:/mysql-cluster/bin";
 
-// MYSQL
-const MYSQL_RUTA = "C:/mysql-cluster/bin";
-const MYSQL_CMD = "mysqld.exe";
-const MYSQL_ARGS = ["--defaults-file=C:/mysql-cluster/my-cluster.ini"];
+const MYSQLD_COMMANDO = "mysqld.exe --defaults-file=C:/mysql-cluster/my-cluster.ini";
+const MYSQLD_CWD = "C:/mysql-cluster/bin";
 
-/* ================= STATE ================= */
+const STOP_NDB1 = 'cmd /c "echo 2 stop | ndb_mgm.exe"';
+const STOP_NDB2 = 'cmd /c "echo 3 stop | ndb_mgm.exe"';
+const STOP_ADMIN = 'cmd /c "echo shutdown | ndb_mgm.exe"';
 
-let monitorInterval = null;
-let lastState = null;
-let mysqlLevantado = false;
-let mysqlEstado = false;
+const status = {
+    cluster: false,
+    ndb1: false,
+    ndb2: false,
+    mysql: false
+}
 
-/* ================= IPC ================= */
+const procesos = {
+    cluster: null,
+    mysql: null
+};
 
-ipcMain.handle("levantar-cluster", async (event, comando, cwd) => {
-    return new Promise((resolve, reject) => {
-        exec(comando, { cwd }, (error, stdout, stderr) => {
+let data = "";
+let lines = [];
+
+// Metodo para ejecutar el comando de levantamiento del cluster
+
+ipcMain.handle("levantar-cluster", async () => {
+    return new Promise((resolve) => {
+        procesos.cluster = exec(NDB_MGMD_COMMAND, { cwd: NDB_MGMD_CWD }, async (error, stdout, stderr) => {
             if (error) {
-                reject(stderr || error.message);
+                status.cluster = false;
+                status.ndb1 = false;
+                status.ndb2 = false;
+                status.mysql = false;
+                resolve({
+                    error: true,
+                    output: stderr || error.message,
+                    status
+                });
             } else {
-                iniciarMonitor();   // solo si levanta bien
-                resolve(stdout);
+                const statusActual = await refrescar();
+                resolve({
+                    output: stdout,
+                    status: statusActual
+                });
             }
         });
     });
 });
 
-ipcMain.handle("refresh-status", async () => {
-    return new Promise((resolve, reject) => {
+// Metodo para levantar el nodo MySQLD
 
-        const proc = spawn(NDB_MGM_CMD, [], { cwd: NDB_MGM_RUTA });
-
-        proc.stdin.write("SHOW\n");
-        proc.stdin.end();
-
-        let output = "";
-
-        proc.stdout.on("data", (data) => {
-            output += data.toString();
-        });
-
-        proc.stderr.on("data", (data) => {
-            reject(data.toString());
-        });
-
-        proc.on("close", () => {
-            const statusObj = parseClusterStatus(output);
-            statusObj.mysqlStatus = mysqlEstado;
-            resolve(statusObj);
+ipcMain.handle("levantar-mysqld", async () => {
+    return new Promise((resolve) => {
+        procesos.mysql = exec(MYSQLD_COMMANDO, { cwd: MYSQLD_CWD }, async (error, stdout, stderr) => {
+            if (error) {
+                status.cluster = false;
+                status.ndb1 = false;
+                status.ndb2 = false;
+                status.mysql = false;
+                resolve({
+                    error: true,
+                    output: stderr || error.message,
+                    status
+                });
+            } else {
+                const statusActual = await refrescar();
+                resolve({
+                    output: stdout,
+                    status: statusActual
+                });
+            }
         });
     });
 });
 
-/* ================= MONITOR ================= */
+// Metodo para chequear el estatus de los nodos
 
-function iniciarMonitor() {
-    if (monitorInterval) return;
+ipcMain.handle("refrescar-status", async () => {
+    const statusActual = await refrescar();
+    return statusActual;
+});
 
-    console.log("🟢 Monitor del cluster iniciado ...");
+// Funcion de chequeo semi-automatico
+function refrescar() {
+    return new Promise((resolve) => {
+        exec(NDB_MGM_COMMANDO, { cwd: NDB_MGM_CWD }, (error, stdout, stderr) => {
+            if (error) {
+                status.cluster = false;
+                status.ndb1 = false;
+                status.ndb2 = false;
+                status.mysql = false;
+                resolve({
+                    output: stderr || error.message,
+                    status
+                });
+            } else {
+                data = stdout;
+                lines = data.split(/\r?\n/);
 
-    monitorInterval = setInterval(() => {
-        const proc = spawn(NDB_MGM_CMD, [], { cwd: NDB_MGM_RUTA });
+                status.cluster = false;
+                status.ndb1 = false;
+                status.ndb2 = false;
+                status.mysql = false;
 
-        proc.stdin.write("SHOW\n");
-        proc.stdin.end();
+                for (const line of lines) {
+                    if (line.includes("id=1") && line.includes("@")) status.cluster = true;
+                    if (line.includes("id=2") && line.includes("@")) status.ndb1 = true;
+                    if (line.includes("id=3") && line.includes("@")) status.ndb2 = true;
+                    if (line.includes("id=4") && line.includes("@")) status.mysql = true;
+                }
 
-        let output = "";
-
-        proc.stdout.on("data", (data) => {
-            output += data.toString();
-        });
-
-        proc.stderr.on("data", (data) => {
-            console.error("NDB_MGM_ERROR:", data.toString());
-        });
-
-        proc.on("close", () => {
-
-            const statusObj = parseClusterStatus(output);
-            statusObj.mysqlStatus = mysqlEstado;
-
-            /* ===== IPC PUSH ===== */
-            if (win && win.webContents) {
-                win.webContents.send("cluster-status", statusObj);
+                resolve({
+                    output: stdout,
+                    status
+                });
             }
-
-            /* ===== LOG SOLO SI CAMBIA ===== */
-            if (JSON.stringify(statusObj) !== JSON.stringify(lastState)) {
-                lastState = statusObj;
-
-                console.log("===== ESTADO CLUSTER =====");
-                console.log(statusObj);
-                console.log("==========================");
-            }
-
-            /* ===== ORQUESTACIÓN MYSQL ===== */
-            if (statusObj.clusterStatus && !mysqlLevantado) {
-                console.log("🔥 Cluster completo → levantando MySQL Server...");
-                levantarMySQL();
-                mysqlLevantado = true;
-            }
-
         });
-    }, 2000); // cada 2s
-}
-
-/* ================= PARSER ================= */
-
-function parseClusterStatus(output) {
-    const status = {
-        clusterStatus: false,
-        ndb1Status: false,
-        ndb2Status: false
-    };
-
-    const text = output.toLowerCase();
-
-    // Cluster general
-    if (text.includes("cluster") && text.includes("running")) {
-        status.clusterStatus = true;
-    }
-
-    // Nodo 1
-    if (text.includes("node 2") && (text.includes("started") || text.includes("connected"))) {
-        status.ndb1Status = true;
-    }
-
-    // Nodo 2
-    if (text.includes("node 3") && (text.includes("started") || text.includes("connected"))) {
-        status.ndb2Status = true;
-    }
-
-    return status;
-}
-
-/* ================= MYSQL ================= */
-
-function levantarMySQL() {
-    console.log("🚀 Iniciando MySQL Server...");
-
-    const mysqlProc = spawn(MYSQL_CMD, MYSQL_ARGS, {
-        cwd: MYSQL_RUTA,
-        detached: true,
-        stdio: "ignore"
     });
-
-    mysqlProc.unref();
-
-    mysqlEstado = true;
-
-    console.log("✅ MySQL Server levantado");
 }
+
+// Aplicar STOP a los nodos de datos
+
+ipcMain.handle("stop-ndb1", async () => {
+    return new Promise((resolve) => {
+        exec(STOP_NDB1, { cwd: NDB_MGM_CWD }, async (error, stdout, stderr) => {
+            if (error) {
+                exec(STOP_ADMIN, { cwd: NDB_MGM_CWD });
+                resolve({
+                    error: true,
+                    output: stderr || error.message
+                });
+            } else {
+                const statusActual = await refrescar();
+                exec(STOP_ADMIN, { cwd: NDB_MGM_CWD });
+                resolve({
+                    output: stdout,
+                    status: statusActual
+                });
+            }
+        });
+    });
+});
+
+ipcMain.handle("stop-ndb2", async () => {
+    return new Promise((resolve) => {
+        exec(STOP_NDB2, { cwd: NDB_MGM_CWD }, async (error, stdout, stderr) => {
+            if (error) {
+                exec(STOP_ADMIN, { cwd: NDB_MGM_CWD });
+                resolve({
+                    error: true,
+                    output: stderr || error.message
+                });
+            } else {
+                const statusActual = await refrescar();
+                exec(STOP_ADMIN, { cwd: NDB_MGM_CWD });
+                resolve({
+                    output: stdout,
+                    status: statusActual
+                });
+            }
+        });
+    })
+});
+
+// Obtener datos de la base de datos
+
+ipcMain.handle("obtener-datos", async () => {
+    try {
+        const [rows] = await pool.query("SELECT * FROM usuarios");
+        return { error: false, data: rows };
+    } catch (error) {
+        return { error: true, message: error.message };
+    }
+});
+
+// Borrar ROW de la base de datos
+
+ipcMain.handle("borrar-row", async (event, id) => {
+    try {
+        await pool.query("DELETE FROM usuarios WHERE id = ?", [id]);
+        return { error: false };
+    } catch (error) {
+        return { error: true, message: error.message };
+    }
+});
+
+// Insertar ROW en la base de datos
+
+ipcMain.handle("insertar-row", async (event, data) => {
+    const { nombre, email, edad } = data;
+    try {
+        await pool.query("INSERT INTO usuarios (nombre, email, edad) VALUES (?, ?, ?)", [nombre, email, edad]);
+        return { error: false };
+    } catch (error) {
+        return { error: true, message: error.message };
+    }
+});
+
+// Edicion inline de la ROW
+
+ipcMain.handle("actualizar-row", async (event, data) => {
+    const { id, nombre, email, edad } = data;
+    try {
+        await pool.query("UPDATE usuarios SET nombre = ?, email = ?, edad = ? WHERE id = ?", [nombre, email, edad, id]);
+        return { error: false };
+    } catch (error) {
+        return { error: true, message: error.message };
+    }
+});
+
+// ! FINAL DE CODIGO
+
+// Matar procesos de consola al cerrar programa
+
+app.on("before-quit", () => {
+    console.log("Cerrando procesos del cluster...");
+
+    if (procesos.cluster && procesos.cluster.pid) {
+        exec(`taskkill /PID ${procesos.cluster.pid} /T /F`);
+    }
+
+    if (procesos.mysql && procesos.mysql.pid) {
+        exec(`taskkill /PID ${procesos.mysql.pid} /T /F`);
+    }
+});
