@@ -59,15 +59,14 @@ app.on("window-all-closed", () => {
 const NDB_MGMD_COMMAND = "ndb_mgmd.exe -f C:/mysql-cluster/config/config.ini --configdir=C:/mysql-cluster/config";
 const NDB_MGMD_CWD = "C:/mysql-cluster/bin";
 
-const NDB_MGM_COMMANDO = 'cmd /c "echo show | ndb_mgm.exe"';
+const NDB_MGM_COMMANDO = 'ndb_mgm.exe -e "show"';
 const NDB_MGM_CWD = "C:/mysql-cluster/bin";
 
 const MYSQLD_COMMANDO = "mysqld.exe --defaults-file=C:/mysql-cluster/my-cluster.ini";
 const MYSQLD_CWD = "C:/mysql-cluster/bin";
 
-const STOP_NDB1 = 'cmd /c "echo 2 stop | ndb_mgm.exe"';
-const STOP_NDB2 = 'cmd /c "echo 3 stop | ndb_mgm.exe"';
-const STOP_ADMIN = 'cmd /c "echo shutdown | ndb_mgm.exe"';
+const STOP_NDB1 = 'ndb_mgm.exe -e "2 stop"';
+const STOP_NDB2 = 'ndb_mgm.exe -e "3 stop"';
 
 const status = {
     cluster: false,
@@ -78,7 +77,7 @@ const status = {
 
 const procesos = {
     cluster: null,
-    mysql: null
+    mysql: null,
 };
 
 let data = "";
@@ -152,6 +151,7 @@ function refrescar() {
                 status.ndb1 = false;
                 status.ndb2 = false;
                 status.mysql = false;
+
                 resolve({
                     output: stderr || error.message,
                     status
@@ -187,14 +187,13 @@ ipcMain.handle("stop-ndb1", async () => {
     return new Promise((resolve) => {
         exec(STOP_NDB1, { cwd: NDB_MGM_CWD }, async (error, stdout, stderr) => {
             if (error) {
-                exec(STOP_ADMIN, { cwd: NDB_MGM_CWD });
                 resolve({
                     error: true,
                     output: stderr || error.message
                 });
             } else {
                 const statusActual = await refrescar();
-                exec(STOP_ADMIN, { cwd: NDB_MGM_CWD });
+
                 resolve({
                     output: stdout,
                     status: statusActual
@@ -208,14 +207,12 @@ ipcMain.handle("stop-ndb2", async () => {
     return new Promise((resolve) => {
         exec(STOP_NDB2, { cwd: NDB_MGM_CWD }, async (error, stdout, stderr) => {
             if (error) {
-                exec(STOP_ADMIN, { cwd: NDB_MGM_CWD });
                 resolve({
                     error: true,
                     output: stderr || error.message
                 });
             } else {
                 const statusActual = await refrescar();
-                exec(STOP_ADMIN, { cwd: NDB_MGM_CWD });
                 resolve({
                     output: stdout,
                     status: statusActual
